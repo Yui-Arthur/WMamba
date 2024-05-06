@@ -19,8 +19,8 @@ from mamba_ssm import Mamba
 from dynamic_network_architectures.building_blocks.helper import maybe_convert_scalar_to_list, get_matching_pool_op
 from torch.cuda.amp import autocast
 from dynamic_network_architectures.building_blocks.residual import BasicBlockD
-
-import ptwt, pywt
+from nnunetv2.waveletLayer import WaveletLayer
+import pywt
 
 class UpsampleLayer(nn.Module):
     def __init__(
@@ -41,37 +41,10 @@ class UpsampleLayer(nn.Module):
         x = self.conv(x)
         return x
 
-class WaveletLayer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(917, 512),
-            nn.LeakyReLU(),
-            nn.Linear(512, 256),
-        )
-        self.wavelet_type = pywt.Wavelet("sym4")
-        self.adaptive_pool = nn.AdaptiveAvgPool3d((5,7,5))
-
-    @autocast(enabled=False)
-    def forward(self, x):
-        ori_shape = x.shape
-        x_w = ptwt.conv_transform_3.wavedec3(x, self.wavelet_type, axes=(-4,-3,-2), level=7)[-1]
-        for idx, e in enumerate(x_w.values()):
-            if idx == 0:
-                x_w_c = e
-            else:
-                x_w_c = torch.cat((x_w_c, e) , 1)
-    
-        out = torch.swapaxes(x_w_c, 1,4)
-        out = self.fc(out)
-        out = torch.swapaxes(out, 1,4)
-        out =  self.adaptive_pool(out)
-        return out
 
 class WMambaLayer(nn.Module):
-    def __init__(self, dim, d_state = 16, d_conv = 4, expand = 2, channel_token = False):
+    def __init__(self, dim, feature_map_size, d_state = 16, d_conv = 4, expand = 2, channel_token = False):
         super().__init__()
-        print(f"MambaLayer: dim: {dim}")
         self.dim = dim
         self.norm = nn.LayerNorm(dim)
         self.mamba = Mamba(
@@ -80,17 +53,16 @@ class WMambaLayer(nn.Module):
                 d_conv=d_conv,    # Local convolution width
                 expand=expand,    # Block expansion factor
         )
-        self.wavelet = WaveletLayer()
+        self.wavelet_layer = WaveletLayer((dim, feature_map_size[0], feature_map_size[1], feature_map_size[2]), pywt.Wavelet("sym4"), wavelet_level=1)
         self.channel_token = channel_token ## whether to use channel as tokens
-
+ 
     def forward_patch_token(self, x):
         B, d_model = x.shape[:2]
         assert d_model == self.dim
         n_tokens = x.shape[2:].numel()
         img_dims = x.shape[2:]
         #####
-        x_t = self.wavelet(x)
-        #####
+        x_t = self.wavelet_layer(x)
         x_flat = x_t.reshape(B, d_model, n_tokens).transpose(-1, -2)
         x_norm = self.norm(x_flat)
         x_mamba = self.mamba(x_norm)
@@ -103,7 +75,9 @@ class WMambaLayer(nn.Module):
         d_model = x.shape[2:].numel()
         assert d_model == self.dim, f"d_model: {d_model}, self.dim: {self.dim}"
         img_dims = x.shape[2:]
-        x_flat = x.flatten(2)
+        #####
+        x_t = self.wavelet_layer(x)
+        x_flat = x_t.flatten(2)
         assert x_flat.shape[2] == d_model, f"x_flat.shape[2]: {x_flat.shape[2]}, d_model: {d_model}"
         x_norm = self.norm(x_flat)
         x_mamba = self.mamba(x_norm)
@@ -288,7 +262,8 @@ class ResidualMambaEncoder(nn.Module):
             mamba_layers.append(
                 WMambaLayer(
                     dim = np.prod(feature_map_sizes[s]) if do_channel_token[s] else features_per_stage[s],
-                    channel_token = do_channel_token[s]
+                    channel_token = do_channel_token[s],
+                    feature_map_size = feature_map_sizes[s],
                 )
             )
 
@@ -444,7 +419,7 @@ class UNetResDecoder(nn.Module):
                 output += np.prod([self.num_classes, *skip_sizes[-(s+1)]], dtype=np.int64)
         return output
     
-class UMambaEnc(nn.Module):
+class WMambaEnc(nn.Module):
     def __init__(self,
                  input_size: Tuple[int, ...],
                  input_channels: int,
@@ -538,10 +513,10 @@ def get_wmamba_enc_3d_from_plans(
 
     label_manager = plans_manager.get_label_manager(dataset_json)
 
-    segmentation_network_class_name = 'UMambaEnc'
-    network_class = UMambaEnc
+    segmentation_network_class_name = 'WMambaEnc'
+    network_class = WMambaEnc
     kwargs = {
-        'UMambaEnc': {
+        'WMambaEnc': {
             'input_size': configuration_manager.patch_size,
             'conv_bias': True,
             'norm_op': get_matching_instancenorm(conv_op),
