@@ -95,17 +95,11 @@ class WMambaLayer(nn.Module):
         d_model = x.shape[2:].numel()
         assert d_model == self.dim, f"d_model: {d_model}, self.dim: {self.dim}"
         img_dims = x.shape[2:]
-        #####
-        x_t = self.wavelet_layer(x)
-        x_flat = x_t.flatten(2)
-        # x_flat = x.flatten(2)
+        x_flat = x.flatten(2)
         assert x_flat.shape[2] == d_model, f"x_flat.shape[2]: {x_flat.shape[2]}, d_model: {d_model}"
         x_norm = self.norm(x_flat)
         x_mamba = self.mamba(x_norm)
         out = x_mamba.reshape(B, n_tokens, *img_dims)
-        #####
-        out = self.reconstruction_layer(out)
-        out = out + x
 
         return out
 
