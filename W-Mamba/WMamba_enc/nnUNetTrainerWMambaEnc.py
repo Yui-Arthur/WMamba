@@ -17,6 +17,6 @@ class nnUNetTrainerWMambaEnc(nnUNetTrainerWMambaBase):
                                           num_input_channels, deep_supervision=enable_deep_supervision)
         
         
-        print("WMambaBot")
+        print("WMambaEnc")
 
         return model

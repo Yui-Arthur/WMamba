@@ -53,8 +53,25 @@ class WMambaLayer(nn.Module):
                 d_conv=d_conv,    # Local convolution width
                 expand=expand,    # Block expansion factor
         )
-        self.wavelet_layer = WaveletLayer((dim, feature_map_size[0], feature_map_size[1], feature_map_size[2]), pywt.Wavelet("sym4"), wavelet_level=1)
         self.channel_token = channel_token ## whether to use channel as tokens
+        
+        self.wavelet_layer = WaveletLayer((dim, feature_map_size[0], feature_map_size[1], feature_map_size[2]), pywt.Wavelet("sym4"))
+        self.reconstruction_layer = nn.Sequential(
+                nn.Conv3d(
+                    in_channels = dim,
+                    out_channels= 2*dim,
+                    kernel_size= (3,3,3),
+                    padding = "same",
+                ),
+                nn.LeakyReLU(),
+                nn.Conv3d(
+                    in_channels = 2*dim,
+                    out_channels= dim,
+                    kernel_size= (3,3,3),
+                    padding = "same",
+                ),
+                nn.LeakyReLU(),
+        )
  
     def forward_patch_token(self, x):
         B, d_model = x.shape[:2]
@@ -67,6 +84,9 @@ class WMambaLayer(nn.Module):
         x_norm = self.norm(x_flat)
         x_mamba = self.mamba(x_norm)
         out = x_mamba.transpose(-1, -2).reshape(B, d_model, *img_dims)
+        #####
+        out = self.reconstruction_layer(out)
+        out = out + x
 
         return out
 
@@ -78,10 +98,14 @@ class WMambaLayer(nn.Module):
         #####
         x_t = self.wavelet_layer(x)
         x_flat = x_t.flatten(2)
+        # x_flat = x.flatten(2)
         assert x_flat.shape[2] == d_model, f"x_flat.shape[2]: {x_flat.shape[2]}, d_model: {d_model}"
         x_norm = self.norm(x_flat)
         x_mamba = self.mamba(x_norm)
         out = x_mamba.reshape(B, n_tokens, *img_dims)
+        #####
+        out = self.reconstruction_layer(out)
+        out = out + x
 
         return out
 
